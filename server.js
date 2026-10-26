@@ -1,5 +1,5 @@
 require("dotenv").config();
-// server.js (Render Production Ready - Final with Date Filter)
+// server.js (Render Production Ready - Final with Date Filter & SOS)
 const express = require("express");
 const axios = require("axios");
 const mongoose = require("mongoose");
@@ -32,13 +32,13 @@ function checkMidnightReset() {
   }
 }
 
-// 1. OPTIONAL MONGODB PERSISTENCE (Prevents Render restarts from wiping routes)
+// 1. OPTIONAL MONGODB PERSISTENCE
 let VanStateModel = null;
 let isDbRestored = false;
 
 if (process.env.MONGO_URI) {
   const vanSchema = new mongoose.Schema({
-    dateKey: { type: String, unique: true }, // e.g., "2026-10-22"
+    dateKey: { type: String, unique: true },
     vansData: mongoose.Schema.Types.Mixed
   });
   VanStateModel = mongoose.model("VanDailyState", vanSchema);
@@ -57,7 +57,6 @@ if (process.env.MONGO_URI) {
   isDbRestored = true;
 }
 
-// Load today's routes from MongoDB on Render startup
 async function restoreStateFromDB() {
   if (!VanStateModel) return;
   try {
@@ -73,7 +72,6 @@ async function restoreStateFromDB() {
   }
 }
 
-// Save state to MongoDB (debounced every 60s)
 let lastDbSave = 0;
 async function backupStateToDB(force = false) {
   if (!VanStateModel || !isDbRestored) return;
@@ -90,7 +88,7 @@ async function backupStateToDB(force = false) {
   }
 }
 
-// 2. KEEP-ALIVE ENDPOINT (Prevents Render from sleeping during duty hours)
+// 2. KEEP-ALIVE ENDPOINT
 app.get("/health", (req, res) => res.status(200).send("ALIVE"));
 
 if (process.env.RENDER_EXTERNAL_URL) {
@@ -98,14 +96,12 @@ if (process.env.RENDER_EXTERNAL_URL) {
     const hourIST = new Date(
       new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" })
     ).getHours();
-    // Keep server awake between 8 AM and 9 PM IST
     if (hourIST >= 8 && hourIST <= 21) {
       axios.get(`${process.env.RENDER_EXTERNAL_URL}/health`).catch(() => {});
     }
   }, 10 * 60 * 1000);
 }
 
-// Haversine Distance Formula (KM)
 function getDistanceKm(lat1, lon1, lat2, lon2) {
   const R = 6371;
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
@@ -118,7 +114,7 @@ function getDistanceKm(lat1, lon1, lat2, lon2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-// 3. TRACCAR CLIENT RECEIVER + DASHBOARD ROUTE
+// 3. TRACCAR CLIENT RECEIVER
 app.all(["/", "/traccar"], async (req, res) => {
   checkMidnightReset();
 
@@ -137,6 +133,10 @@ app.all(["/", "/traccar"], async (req, res) => {
 
     const lat = parseFloat(coords.latitude ?? q.lat);
     const lon = parseFloat(coords.longitude ?? q.lon);
+    
+    // Check for SOS alarm from Traccar app
+    const isSos = q.alarm === "sos" || q.sos === "true" || q.sos === true;
+
     if (isNaN(lat) || isNaN(lon)) return res.status(200).send("OK");
 
     const speedKnotsOrMps = parseFloat(coords.speed ?? q.speed ?? 0);
@@ -155,6 +155,7 @@ app.all(["/", "/traccar"], async (req, res) => {
         deviceId,
         totalKm: 0,
         isMockDetected: false,
+        sosAlert: false, // New SOS property
         battery: isNaN(battery) ? 100 : battery,
         lastSeen: now,
         idleSince: now,
@@ -169,6 +170,10 @@ app.all(["/", "/traccar"], async (req, res) => {
     }
 
     const van = vans[deviceId];
+    
+    // Trigger SOS if received
+    if (isSos) van.sosAlert = true;
+
     const prevPoint = van.points[van.points.length - 1];
 
     if (prevPoint) {
@@ -217,7 +222,7 @@ app.all(["/", "/traccar"], async (req, res) => {
       isMock
     });
 
-    await backupStateToDB(van.points.length === 1); // Force immediate DB save on first ping
+    await backupStateToDB(van.points.length === 1 || isSos); 
     return res.status(200).send("OK");
   } catch (err) {
     console.error("Ping error:", err.message);
@@ -225,13 +230,12 @@ app.all(["/", "/traccar"], async (req, res) => {
   }
 });
 
-// 4. API ENDPOINTS FOR DASHBOARD & CLAPPIA SYNC
+// 4. API ENDPOINTS
 app.get("/api/vans", (req, res) => {
   checkMidnightReset();
   res.json(vans);
 });
 
-// Fetch historical data by date (YYYY-MM-DD)
 app.get("/api/history/:date", async (req, res) => {
   if (!VanStateModel) return res.status(500).json({ error: "MongoDB not enabled" });
   try {
@@ -242,13 +246,22 @@ app.get("/api/history/:date", async (req, res) => {
   }
 });
 
+// Endpoint to dismiss SOS from dashboard
+app.post("/api/clear-sos/:deviceId", async (req, res) => {
+  const van = vans[req.params.deviceId];
+  if (van) {
+    van.sosAlert = false;
+    await backupStateToDB(true);
+    res.json({ success: true });
+  } else {
+    res.status(404).json({ error: "Van not found" });
+  }
+});
+
 app.post("/api/push-to-clappia/:deviceId", async (req, res) => {
   const van = vans[req.params.deviceId];
   if (!van) return res.status(404).json({ error: "Van not found" });
-  if (!CLAPPIA_CONFIG.apiKey || !CLAPPIA_CONFIG.userEmail) {
-    return res.status(400).json({ error: "Missing CLAPPIA_API_KEY or CLAPPIA_USER_EMAIL in .env" });
-  }
-
+  
   try {
     const response = await axios.post(
       "https://api-public-v4.clappia.com/submissions/create",
@@ -262,12 +275,7 @@ app.post("/api/push-to-clappia/:deviceId", async (req, res) => {
           source: ["Babbler Disposition"]
         }
       },
-      {
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": CLAPPIA_CONFIG.apiKey
-        }
-      }
+      { headers: { "Content-Type": "application/json", "x-api-key": CLAPPIA_CONFIG.apiKey } }
     );
     res.json({ success: true, submissionId: response.data.submissionId });
   } catch (err) {
@@ -288,9 +296,11 @@ function getDashboardHtml() {
     body { display: flex; height: 100vh; background: #0f172a; color: #f8fafc; }
     #sidebar { width: 360px; padding: 16px; overflow-y: auto; border-right: 1px solid #1e293b; display: flex; flex-direction: column; gap: 14px; }
     #map { flex: 1; height: 100%; }
-    .card { background: #1e293b; border-radius: 10px; padding: 14px; border-left: 5px solid #10b981; }
+    .card { background: #1e293b; border-radius: 10px; padding: 14px; border-left: 5px solid #10b981; transition: 0.3s; }
     .card.idle { border-left-color: #f59e0b; }
     .card.mock { border-left-color: #ef4444; background: #450a0a; }
+    .card.sos { border-left-color: #dc2626; background: #7f1d1d; animation: pulse 1s infinite; }
+    @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.7); } 70% { box-shadow: 0 0 0 10px rgba(220, 38, 38, 0); } 100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0); } }
     .title { font-size: 16px; font-weight: 700; display: flex; justify-content: space-between; align-items: center; }
     .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; font-size: 13px; }
     .stat-box { background: #0f172a; padding: 8px; border-radius: 6px; }
@@ -298,9 +308,11 @@ function getDashboardHtml() {
     .bg-green { background: #065f46; color: #34d399; }
     .bg-amber { background: #78350f; color: #fbbf24; }
     .bg-red { background: #991b1b; color: #f87171; }
+    .bg-sos { background: #dc2626; color: white; border: 1px solid white; }
     .btn-row { display: flex; gap: 8px; margin-top: 10px; }
     button { flex: 1; padding: 8px; border: none; border-radius: 6px; background: #3b82f6; color: white; font-weight: 600; cursor: pointer; font-size: 12px; }
     button.clappia { background: #10b981; }
+    button.btn-sos { background: #dc2626; border: 1px solid #f87171; }
     .date-filter { background: #1e293b; color: white; border: 1px solid #3b82f6; padding: 8px; border-radius: 6px; width: 100%; margin-bottom: 10px; }
   </style>
 </head>
@@ -328,11 +340,15 @@ function getDashboardHtml() {
       btnEl.innerText = '⏳ Pushing...';
       try {
         const res = await fetch('/api/push-to-clappia/' + encodeURIComponent(deviceId), { method: 'POST' });
-        const data = await res.json();
         btnEl.innerText = res.ok ? '✅ Sent to Clappia' : '❌ Failed';
       } catch (e) {
         btnEl.innerText = '❌ Error';
       }
+    }
+    
+    async function clearSos(deviceId) {
+      await fetch('/api/clear-sos/' + encodeURIComponent(deviceId), { method: 'POST' });
+      refreshData(); // instantly visually update
     }
 
     function handleDateChange() {
@@ -371,7 +387,12 @@ function getDashboardHtml() {
         
         let statusBadge = isToday ? '<span class="badge bg-green">MOVING</span>' : '<span class="badge bg-amber">ARCHIVED</span>';
         let cardClass = 'card';
-        if (v.isMockDetected) {
+        
+        // Priority styling: SOS > Mock > Parked
+        if (v.sosAlert && isToday) {
+          statusBadge = '<span class="badge bg-sos">🆘 SOS EMERGENCY</span>';
+          cardClass = 'card sos';
+        } else if (v.isMockDetected) {
           statusBadge = '<span class="badge bg-red">🚨 FAKE GPS</span>';
           cardClass = 'card mock';
         } else if (v.idleMinutes >= 10 && isToday) {
@@ -381,6 +402,10 @@ function getDashboardHtml() {
 
         const card = document.createElement('div');
         card.className = cardClass;
+        
+        let dismissBtn = (v.sosAlert && isToday) ? \`<button class="btn-sos" onclick="clearSos('\${v.deviceId}')">🔕 Clear SOS</button>\` : '';
+        let clappiaBtn = isToday ? \`<button class="clappia" onclick="pushVanToClappia('\${v.deviceId}', this)">🚀 Push Clappia</button>\` : '';
+
         card.innerHTML = \`
           <div class="title"><span style="color:\${color}">● \${v.deviceId}</span>\${statusBadge}</div>
           <div class="stat-grid">
@@ -391,7 +416,8 @@ function getDashboardHtml() {
           </div>
           <div class="btn-row">
             <button onclick="map.setView([\${v.currentLat}, \${v.currentLon}], 16)">📍 Center Map</button>
-            \${isToday ? \`<button class="clappia" onclick="pushVanToClappia('\${v.deviceId}', this)">🚀 Push Clappia</button>\` : ''}
+            \${dismissBtn}
+            \${!v.sosAlert ? clappiaBtn : ''} 
           </div>
         \`;
         listEl.appendChild(card);
@@ -403,9 +429,15 @@ function getDashboardHtml() {
         }
 
         const polyline = L.polyline(v.points.map(p => [p.lat, p.lon]), { color, weight: 5 }).addTo(map);
+        
+        // If SOS is active, make the map marker pulse red
+        let markerColor = v.sosAlert ? '#dc2626' : (v.isMockDetected ? '#ef4444' : color);
+        let markerRadius = v.sosAlert ? 12 : 9;
+
         const marker = L.circleMarker([v.currentLat, v.currentLon], {
-          radius: 9, fillColor: v.isMockDetected ? '#ef4444' : color, color: '#fff', weight: 2, fillOpacity: 1
+          radius: markerRadius, fillColor: markerColor, color: '#fff', weight: 2, fillOpacity: 1
         }).addTo(map);
+        
         const haltMarkers = (v.halts || []).map(h =>
           L.circleMarker([h.lat, h.lon], { radius: 6, fillColor: '#f59e0b', color: '#000', weight: 1, fillOpacity: 0.9 })
             .addTo(map).bindPopup(\`🛑 Parked \${h.durationMin} mins (until \${h.endedAt})\`)
