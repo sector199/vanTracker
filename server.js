@@ -238,6 +238,8 @@ app.post("/api/push-to-clappia/:deviceId", async (req, res) => {
   }
 });
 
+
+
 function getDashboardHtml() {
   return `<!DOCTYPE html>
 <html>
@@ -265,7 +267,6 @@ function getDashboardHtml() {
     .menu-btn { position: absolute; top: 12px; left: 12px; z-index: 999; display: none; }
     body.sidebar-closed .menu-btn { display: block; }
     
-    /* ADDED SPACING BETWEEN CARDS */
     #van-list { display: flex; flex-direction: column; gap: 16px; margin-bottom: 20px; }
     
     .card { background: #1e293b; border-radius: 10px; padding: 14px; border-left: 5px solid #10b981; transition: 0.3s; }
@@ -289,7 +290,6 @@ function getDashboardHtml() {
     button.btn-sos { background: #dc2626; border: 1px solid #f87171; }
     .filter-input { background: #1e293b; color: white; border: 1px solid #3b82f6; padding: 10px; border-radius: 6px; width: 100%; margin-bottom: 5px; font-size: 14px; }
     
-    /* FIXED CLOSE BUTTON VISIBILITY */
     .header-row { display: flex; justify-content: space-between; align-items: center; }
     .close-btn { background: none; border: none; color: white; font-size: 28px; cursor: pointer; display: block; padding: 0 8px; }
     .close-btn:hover { color: #f87171; }
@@ -307,7 +307,6 @@ function getDashboardHtml() {
   <div id="sidebar">
     <div class="header-row">
       <h2>🚐 Van Tracker</h2>
-      <!-- Close button is now always visible when sidebar is open -->
       <button class="close-btn" onclick="toggleSidebar()">×</button>
     </div>
     <input type="date" id="dateFilter" class="filter-input" onchange="handleFilters()" />
@@ -321,12 +320,19 @@ function getDashboardHtml() {
   
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
-    const map = L.map('map', { zoomControl: false }).setView([28.5355, 77.3910], 12);
+    // ADDED minZoom and maxZoom to restrict zooming out too far or zooming in past tile limits
+    const map = L.map('map', { 
+      zoomControl: false,
+      minZoom: 4,  
+      maxZoom: 18  
+    }).setView([28.5355, 77.3910], 12);
+    
     L.control.zoom({ position: 'bottomright' }).addTo(map);
     
-    // SWAPPED TO HIGH-DETAIL ESRI MAP (FREE & BEAUTIFUL)
-    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
-      attribution: '&copy; Esri, HERE, Garmin, FAO, NOAA, USGS'
+    // REVERTED TO PREVIOUS OPENSTREETMAP LAYER
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap contributors'
     }).addTo(map);
 
     const colors = ['#3b82f6', '#8b5cf6', '#ec4899', '#14b8a6', '#f59e0b', '#10b981'];
@@ -443,7 +449,7 @@ function getDashboardHtml() {
         } else if (v.isMockDetected) {
           statusBadge = '<span class="badge bg-red">🚨 FAKE GPS</span>';
           cardClass = 'card mock';
-        } else if (v.idleMinutes >= 10 && isToday) {
+        } else if (v.idleMinutes >= 10 && is Today) {
           statusBadge = '<span class="badge bg-amber">⚠️ PARKED ' + v.idleMinutes + 'M</span>';
           cardClass = 'card idle';
         }
@@ -500,5 +506,8 @@ function getDashboardHtml() {
 </body>
 </html>`;
 }
+
+
+
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => console.log(`Tracker listening on port ${PORT}`));
