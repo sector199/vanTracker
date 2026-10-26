@@ -192,7 +192,46 @@ app.all(["/", "/traccar"], async (req, res) => {
   }
 });
 
-// 4. API ENDPOINTS
+// 4. ADMIN PROTECTED API ENDPOINTS
+const requireAdminAuth = (req, res, next) => {
+  const apiKey = req.headers['x-admin-api-key'];
+  if (!process.env.ADMIN_API_KEY) {
+    return res.status(500).json({ error: "ADMIN_API_KEY not set on server." });
+  }
+  if (apiKey !== process.env.ADMIN_API_KEY) {
+    return res.status(403).json({ error: "Forbidden: Invalid API Key" });
+  }
+  next();
+};
+
+app.delete("/api/admin/vans/:deviceId", requireAdminAuth, async (req, res) => {
+  const deviceId = req.params.deviceId;
+  if (vans[deviceId]) {
+    delete vans[deviceId];
+    await backupStateToDB(true);
+    res.json({ success: true, message: `Deleted ${deviceId} from today's tracking.` });
+  } else {
+    res.status(404).json({ error: "Van not found in live tracking." });
+  }
+});
+
+app.delete("/api/admin/history/:date/:deviceId", requireAdminAuth, async (req, res) => {
+  if (!VanStateModel) return res.status(500).json({ error: "MongoDB not enabled" });
+  try {
+    const doc = await VanStateModel.findOne({ dateKey: req.params.date });
+    if (!doc || !doc.vansData || !doc.vansData[req.params.deviceId]) {
+      return res.status(404).json({ error: "Van not found on that date." });
+    }
+    delete doc.vansData[req.params.deviceId];
+    doc.markModified('vansData'); // Required for Mixed types in Mongoose
+    await doc.save();
+    res.json({ success: true, message: `Deleted ${req.params.deviceId} from ${req.params.date}.` });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 5. PUBLIC API ENDPOINTS
 app.get("/api/vans", (req, res) => {
   checkMidnightReset();
   res.json(vans);
@@ -238,10 +277,6 @@ app.post("/api/push-to-clappia/:deviceId", async (req, res) => {
   }
 });
 
-
-
-
-
 function getDashboardHtml() {
   return `<!DOCTYPE html>
 <html>
@@ -253,30 +288,20 @@ function getDashboardHtml() {
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; font-family: system-ui, sans-serif; }
     body { display: flex; height: 100vh; background: #0f172a; color: #f8fafc; overflow: hidden; position: relative; }
-    
     #sidebar { width: 360px; padding: 16px; overflow-y: auto; border-right: 1px solid #1e293b; display: flex; flex-direction: column; gap: 14px; background: #0f172a; z-index: 1000; transition: transform 0.3s ease; }
     #map { flex: 1; height: 100%; z-index: 1; }
     body.sidebar-closed #sidebar { transform: translateX(-100%); position: absolute; height: 100%; }
-    
-    @media (max-width: 768px) { 
-      #sidebar { position: absolute; height: 100%; width: 100%; max-width: 320px; box-shadow: 4px 0 15px rgba(0,0,0,0.5); } 
-      body.sidebar-closed #sidebar { transform: translateX(-110%); } 
-    }
-    
+    @media (max-width: 768px) { #sidebar { position: absolute; height: 100%; width: 100%; max-width: 320px; box-shadow: 4px 0 15px rgba(0,0,0,0.5); } body.sidebar-closed #sidebar { transform: translateX(-110%); } }
     .floating-controls { position: absolute; top: 12px; right: 12px; z-index: 999; display: flex; gap: 10px; }
     .float-btn { background: #1e293b; color: white; border: 2px solid #3b82f6; padding: 8px 12px; border-radius: 6px; cursor: pointer; font-weight: bold; box-shadow: 0 4px 6px rgba(0,0,0,0.3); font-size: 16px; }
-    
     .menu-btn { position: absolute; top: 12px; left: 12px; z-index: 999; display: none; }
     body.sidebar-closed .menu-btn { display: block; }
-    
     #van-list { display: flex; flex-direction: column; gap: 16px; margin-bottom: 20px; }
-    
     .card { background: #1e293b; border-radius: 10px; padding: 14px; border-left: 5px solid #10b981; transition: 0.3s; }
     .card.idle { border-left-color: #f59e0b; }
     .card.mock { border-left-color: #ef4444; background: #450a0a; }
     .card.sos { border-left-color: #dc2626; background: #7f1d1d; animation: pulse 1s infinite; }
     @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.7); } 70% { box-shadow: 0 0 0 10px rgba(220, 38, 38, 0); } 100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0); } }
-    
     .title { font-size: 16px; font-weight: 700; display: flex; justify-content: space-between; align-items: center; }
     .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; font-size: 13px; }
     .stat-box { background: #0f172a; padding: 8px; border-radius: 6px; }
@@ -285,27 +310,22 @@ function getDashboardHtml() {
     .bg-amber { background: #78350f; color: #fbbf24; }
     .bg-red { background: #991b1b; color: #f87171; }
     .bg-sos { background: #dc2626; color: white; border: 1px solid white; }
-    
     .btn-row { display: flex; gap: 8px; margin-top: 10px; }
     button.action-btn { flex: 1; padding: 8px; border: none; border-radius: 6px; background: #3b82f6; color: white; font-weight: 600; cursor: pointer; font-size: 12px; }
     button.clappia { background: #10b981; }
     button.btn-sos { background: #dc2626; border: 1px solid #f87171; }
     .filter-input { background: #1e293b; color: white; border: 1px solid #3b82f6; padding: 10px; border-radius: 6px; width: 100%; margin-bottom: 5px; font-size: 14px; }
-    
     .header-row { display: flex; justify-content: space-between; align-items: center; }
     .close-btn { background: none; border: none; color: white; font-size: 28px; cursor: pointer; display: block; padding: 0 8px; }
     .close-btn:hover { color: #f87171; }
   </style>
 </head>
 <body class="sidebar-closed">
-  
   <button class="float-btn menu-btn" onclick="toggleSidebar()">☰ Menu</button>
-  
   <div class="floating-controls">
     <button class="float-btn" onclick="fitAllVans()">🌍 Fit All</button>
     <button class="float-btn" onclick="toggleFullScreen()">⛶ Fullscreen</button>
   </div>
-
   <div id="sidebar">
     <div class="header-row">
       <h2>🚐 Van Tracker</h2>
@@ -317,149 +337,65 @@ function getDashboardHtml() {
     </select>
     <div id="van-list">Waiting for GPS ping...</div>
   </div>
-  
   <div id="map"></div>
-  
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
-    const map = L.map('map', { 
-      zoomControl: false,
-      minZoom: 4,  
-      maxZoom: 18  
-    }).setView([28.5355, 77.3910], 12);
-    
+    const map = L.map('map', { zoomControl: false, minZoom: 4, maxZoom: 18 }).setView([28.5355, 77.3910], 12);
     L.control.zoom({ position: 'bottomright' }).addTo(map);
-    
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 19,
-      attribution: '&copy; OpenStreetMap contributors'
-    }).addTo(map);
-
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' }).addTo(map);
     const colors = ['#3b82f6', '#8b5cf6', '#ec4899', '#14b8a6', '#f59e0b', '#10b981'];
     const layers = {};
     let refreshInterval;
-
     const dateInput = document.getElementById('dateFilter');
     const driverInput = document.getElementById('driverFilter');
     const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
     dateInput.value = todayStr;
     dateInput.max = todayStr;
-
-    function toggleSidebar() {
-      document.body.classList.toggle('sidebar-closed');
-      setTimeout(() => map.invalidateSize(), 350);
-    }
-
-    function toggleFullScreen() {
-      if (!document.fullscreenElement) {
-        document.documentElement.requestFullscreen().catch(() => alert("Fullscreen blocked by browser"));
-      } else {
-        document.exitFullscreen();
-      }
-    }
-
-    function fitAllVans() {
-      const markers = Object.values(layers).map(l => l.marker);
-      if (markers.length > 0) {
-        const group = new L.featureGroup(markers);
-        map.fitBounds(group.getBounds(), { padding: [50, 50], maxZoom: 16 });
-      }
-    }
-
-    async function pushVanToClappia(deviceId, btnEl) {
-      btnEl.innerText = '⏳ Pushing...';
-      try {
-        const res = await fetch('/api/push-to-clappia/' + encodeURIComponent(deviceId), { method: 'POST' });
-        btnEl.innerText = res.ok ? '✅ Sent' : '❌ Failed';
-      } catch (e) {
-        btnEl.innerText = '❌ Error';
-      }
-    }
-    
-    async function clearSos(deviceId) {
-      await fetch('/api/clear-sos/' + encodeURIComponent(deviceId), { method: 'POST' });
-      refreshData();
-    }
-
-    function handleFilters() {
-      refreshData(true);
-      clearInterval(refreshInterval);
-      if (dateInput.value === todayStr) {
-        refreshInterval = setInterval(refreshData, 5000);
-      }
-    }
-
+    function toggleSidebar() { document.body.classList.toggle('sidebar-closed'); setTimeout(() => map.invalidateSize(), 350); }
+    function toggleFullScreen() { if (!document.fullscreenElement) { document.documentElement.requestFullscreen().catch(() => alert("Fullscreen blocked")); } else { document.exitFullscreen(); } }
+    function fitAllVans() { const markers = Object.values(layers).map(l => l.marker); if (markers.length > 0) { const group = new L.featureGroup(markers); map.fitBounds(group.getBounds(), { padding: [50, 50], maxZoom: 16 }); } }
+    async function pushVanToClappia(deviceId, btnEl) { btnEl.innerText = '⏳ Pushing...'; try { const res = await fetch('/api/push-to-clappia/' + encodeURIComponent(deviceId), { method: 'POST' }); btnEl.innerText = res.ok ? '✅ Sent' : '❌ Failed'; } catch (e) { btnEl.innerText = '❌ Error'; } }
+    async function clearSos(deviceId) { await fetch('/api/clear-sos/' + encodeURIComponent(deviceId), { method: 'POST' }); refreshData(); }
+    function handleFilters() { refreshData(true); clearInterval(refreshInterval); if (dateInput.value === todayStr) { refreshInterval = setInterval(refreshData, 5000); } }
     function updateDriverDropdown(keys) {
       const currentVal = driverInput.value;
       driverInput.innerHTML = '<option value="all">🚙 All Drivers</option>';
-      keys.forEach(k => {
-        const opt = document.createElement('option');
-        opt.value = k;
-        opt.innerText = '🚐 ' + k;
-        if(k === currentVal) opt.selected = true;
-        driverInput.appendChild(opt);
-      });
+      keys.forEach(k => { const opt = document.createElement('option'); opt.value = k; opt.innerText = '🚐 ' + k; if(k === currentVal) opt.selected = true; driverInput.appendChild(opt); });
     }
-
     async function refreshData(forceZoom = false) {
       const selectedDate = dateInput.value;
       const isToday = selectedDate === todayStr;
       const selectedDriver = driverInput.value;
-      
       const res = await fetch(isToday ? '/api/vans' : '/api/history/' + selectedDate);
       const vans = await res.json();
       const listEl = document.getElementById('van-list');
       const keys = Object.keys(vans);
-      
       updateDriverDropdown(keys);
-
       if (keys.length === 0) {
         listEl.innerHTML = '<div style="padding:10px; color:#94a3b8;">No data for this date.</div>';
-        Object.values(layers).forEach(l => {
-          map.removeLayer(l.marker);
-          map.removeLayer(l.polyline);
-        });
+        Object.values(layers).forEach(l => { map.removeLayer(l.marker); map.removeLayer(l.polyline); });
         return;
       }
-      
       listEl.innerHTML = '';
-      
       Object.keys(layers).forEach(id => {
         if (!keys.includes(id) || (selectedDriver !== 'all' && id !== selectedDriver)) {
-          map.removeLayer(layers[id].polyline);
-          map.removeLayer(layers[id].marker);
-          layers[id].haltMarkers.forEach(m => map.removeLayer(m));
-          delete layers[id];
+          map.removeLayer(layers[id].polyline); map.removeLayer(layers[id].marker); layers[id].haltMarkers.forEach(m => map.removeLayer(m)); delete layers[id];
         }
       });
-
       keys.forEach((id, idx) => {
         if (selectedDriver !== 'all' && id !== selectedDriver) return; 
-
         const v = vans[id];
         const color = colors[idx % colors.length];
         const secAgo = Math.round((Date.now() - v.lastSeen) / 1000);
-        
         let statusBadge = isToday ? '<span class="badge bg-green">MOVING</span>' : '<span class="badge bg-amber">ARCHIVED</span>';
         let cardClass = 'card';
-        
-        if (v.sosAlert && isToday) {
-          statusBadge = '<span class="badge bg-sos">🆘 SOS EMERGENCY</span>';
-          cardClass = 'card sos';
-        } else if (v.isMockDetected) {
-          statusBadge = '<span class="badge bg-red">🚨 FAKE GPS</span>';
-          cardClass = 'card mock';
-        } else if (v.idleMinutes >= 10 && isToday) {
-          statusBadge = '<span class="badge bg-amber">⚠️ PARKED ' + v.idleMinutes + 'M</span>';
-          cardClass = 'card idle';
-        }
-
+        if (v.sosAlert && isToday) { statusBadge = '<span class="badge bg-sos">🆘 SOS EMERGENCY</span>'; cardClass = 'card sos'; } 
+        else if (v.isMockDetected) { statusBadge = '<span class="badge bg-red">🚨 FAKE GPS</span>'; cardClass = 'card mock'; } 
+        else if (v.idleMinutes >= 10 && isToday) { statusBadge = '<span class="badge bg-amber">⚠️ PARKED ' + v.idleMinutes + 'M</span>'; cardClass = 'card idle'; }
         const card = document.createElement('div');
         card.className = cardClass;
-        
         let dismissBtn = (v.sosAlert && isToday) ? \`<button class="action-btn btn-sos" onclick="clearSos('\${v.deviceId}')">🔕 Clear</button>\` : '';
         let clappiaBtn = isToday ? \`<button class="action-btn clappia" onclick="pushVanToClappia('\${v.deviceId}', this)">🚀 Clappia</button>\` : '';
-
         card.innerHTML = \`
           <div class="title"><span style="color:\${color}">● \${v.deviceId}</span>\${statusBadge}</div>
           <div class="stat-grid">
@@ -475,40 +411,21 @@ function getDashboardHtml() {
           </div>
         \`;
         listEl.appendChild(card);
-
-        if (layers[id]) {
-          map.removeLayer(layers[id].polyline);
-          map.removeLayer(layers[id].marker);
-          layers[id].haltMarkers.forEach(m => map.removeLayer(m));
-        }
-
+        if (layers[id]) { map.removeLayer(layers[id].polyline); map.removeLayer(layers[id].marker); layers[id].haltMarkers.forEach(m => map.removeLayer(m)); }
         const polyline = L.polyline(v.points.map(p => [p.lat, p.lon]), { color, weight: 4 }).addTo(map);
         let markerRadius = v.sosAlert ? 12 : 8;
         let markerColor = v.sosAlert ? '#dc2626' : (v.isMockDetected ? '#ef4444' : color);
-
-        const marker = L.circleMarker([v.currentLat, v.currentLon], {
-          radius: markerRadius, fillColor: markerColor, color: '#fff', weight: 2, fillOpacity: 1
-        }).addTo(map);
-        
-        const haltMarkers = (v.halts || []).map(h =>
-          L.circleMarker([h.lat, h.lon], { radius: 5, fillColor: '#f59e0b', color: '#000', weight: 1, fillOpacity: 0.9 })
-            .addTo(map).bindPopup(\`🛑 Parked \${h.durationMin}m (\${h.endedAt})\`)
-        );
-        
+        const marker = L.circleMarker([v.currentLat, v.currentLon], { radius: markerRadius, fillColor: markerColor, color: '#fff', weight: 2, fillOpacity: 1 }).addTo(map);
+        const haltMarkers = (v.halts || []).map(h => L.circleMarker([h.lat, h.lon], { radius: 5, fillColor: '#f59e0b', color: '#000', weight: 1, fillOpacity: 0.9 }).addTo(map).bindPopup(\`🛑 Parked \${h.durationMin}m (\${h.endedAt})\`));
         layers[id] = { polyline, marker, haltMarkers };
       });
-
       if (forceZoom) fitAllVans();
     }
-    
     handleFilters();
   </script>
 </body>
 </html>`;
 }
-
-
-
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => console.log(`Tracker listening on port ${PORT}`));
