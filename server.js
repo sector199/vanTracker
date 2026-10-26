@@ -240,6 +240,8 @@ app.post("/api/push-to-clappia/:deviceId", async (req, res) => {
 
 
 
+
+
 function getDashboardHtml() {
   return `<!DOCTYPE html>
 <html>
@@ -320,7 +322,6 @@ function getDashboardHtml() {
   
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
-    // ADDED minZoom and maxZoom to restrict zooming out too far or zooming in past tile limits
     const map = L.map('map', { 
       zoomControl: false,
       minZoom: 4,  
@@ -329,7 +330,6 @@ function getDashboardHtml() {
     
     L.control.zoom({ position: 'bottomright' }).addTo(map);
     
-    // REVERTED TO PREVIOUS OPENSTREETMAP LAYER
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19,
       attribution: '&copy; OpenStreetMap contributors'
@@ -449,7 +449,7 @@ function getDashboardHtml() {
         } else if (v.isMockDetected) {
           statusBadge = '<span class="badge bg-red">🚨 FAKE GPS</span>';
           cardClass = 'card mock';
-        } else if (v.idleMinutes >= 10 && is Today) {
+        } else if (v.idleMinutes >= 10 && isToday) {
           statusBadge = '<span class="badge bg-amber">⚠️ PARKED ' + v.idleMinutes + 'M</span>';
           cardClass = 'card idle';
         }
@@ -506,6 +506,7 @@ function getDashboardHtml() {
 </body>
 </html>`;
 }
+
 
 
 
