@@ -1,5 +1,5 @@
 require("dotenv").config();
-// server.js (Render Production Ready - Final)
+// server.js (Render Production Ready - Final with Date Filter)
 const express = require("express");
 const axios = require("axios");
 const mongoose = require("mongoose");
@@ -231,6 +231,17 @@ app.get("/api/vans", (req, res) => {
   res.json(vans);
 });
 
+// Fetch historical data by date (YYYY-MM-DD)
+app.get("/api/history/:date", async (req, res) => {
+  if (!VanStateModel) return res.status(500).json({ error: "MongoDB not enabled" });
+  try {
+    const doc = await VanStateModel.findOne({ dateKey: req.params.date });
+    res.json(doc ? doc.vansData : {});
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post("/api/push-to-clappia/:deviceId", async (req, res) => {
   const van = vans[req.params.deviceId];
   if (!van) return res.status(404).json({ error: "Van not found" });
@@ -290,11 +301,13 @@ function getDashboardHtml() {
     .btn-row { display: flex; gap: 8px; margin-top: 10px; }
     button { flex: 1; padding: 8px; border: none; border-radius: 6px; background: #3b82f6; color: white; font-weight: 600; cursor: pointer; font-size: 12px; }
     button.clappia { background: #10b981; }
+    .date-filter { background: #1e293b; color: white; border: 1px solid #3b82f6; padding: 8px; border-radius: 6px; width: 100%; margin-bottom: 10px; }
   </style>
 </head>
 <body>
   <div id="sidebar">
-    <h2>🚐 Live Van Tracker</h2>
+    <h2>🚐 Van Tracker</h2>
+    <input type="date" id="dateFilter" class="date-filter" onchange="handleDateChange()" />
     <div id="van-list">Waiting for GPS ping...</div>
   </div>
   <div id="map"></div>
@@ -304,6 +317,12 @@ function getDashboardHtml() {
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
     const colors = ['#3b82f6', '#8b5cf6', '#ec4899', '#14b8a6'];
     const layers = {};
+    let refreshInterval;
+
+    const dateInput = document.getElementById('dateFilter');
+    const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+    dateInput.value = todayStr;
+    dateInput.max = todayStr;
 
     async function pushVanToClappia(deviceId, btnEl) {
       btnEl.innerText = '⏳ Pushing...';
@@ -316,24 +335,46 @@ function getDashboardHtml() {
       }
     }
 
+    function handleDateChange() {
+      refreshData();
+      clearInterval(refreshInterval);
+      if (dateInput.value === todayStr) {
+        refreshInterval = setInterval(refreshData, 5000);
+      }
+    }
+
     async function refreshData() {
-      const res = await fetch('/api/vans');
+      const selectedDate = dateInput.value;
+      const isToday = selectedDate === todayStr;
+      const endpoint = isToday ? '/api/vans' : '/api/history/' + selectedDate;
+      
+      const res = await fetch(endpoint);
       const vans = await res.json();
       const listEl = document.getElementById('van-list');
       const keys = Object.keys(vans);
-      if (keys.length === 0) return;
+      
+      if (keys.length === 0) {
+        listEl.innerHTML = '<div style="padding:10px; color:#94a3b8;">No data for this date.</div>';
+        Object.keys(layers).forEach(id => {
+          map.removeLayer(layers[id].polyline);
+          map.removeLayer(layers[id].marker);
+          layers[id].haltMarkers.forEach(m => map.removeLayer(m));
+        });
+        return;
+      }
       listEl.innerHTML = '';
 
       keys.forEach((id, idx) => {
         const v = vans[id];
         const color = colors[idx % colors.length];
         const secAgo = Math.round((Date.now() - v.lastSeen) / 1000);
-        let statusBadge = '<span class="badge bg-green">MOVING</span>';
+        
+        let statusBadge = isToday ? '<span class="badge bg-green">MOVING</span>' : '<span class="badge bg-amber">ARCHIVED</span>';
         let cardClass = 'card';
         if (v.isMockDetected) {
           statusBadge = '<span class="badge bg-red">🚨 FAKE GPS</span>';
           cardClass = 'card mock';
-        } else if (v.idleMinutes >= 10) {
+        } else if (v.idleMinutes >= 10 && isToday) {
           statusBadge = '<span class="badge bg-amber">⚠️ PARKED ' + v.idleMinutes + 'M</span>';
           cardClass = 'card idle';
         }
@@ -345,12 +386,12 @@ function getDashboardHtml() {
           <div class="stat-grid">
             <div class="stat-box">🛣️ <b>\${v.totalKm} KM</b><br><span style="color:#94a3b8">Distance</span></div>
             <div class="stat-box">🔋 <b>\${v.battery}%</b><br><span style="color:#94a3b8">Battery</span></div>
-            <div class="stat-box">🛑 <b>\${v.idleMinutes} min</b><br><span style="color:#94a3b8">Parked (\${v.halts.length} halts)</span></div>
-            <div class="stat-box">⏱️ <b>\${secAgo}s ago</b><br><span style="color:#94a3b8">Last Ping</span></div>
+            <div class="stat-box">🛑 <b>\${isToday ? v.idleMinutes + ' min' : '---'}</b><br><span style="color:#94a3b8">Parked (\${v.halts.length} halts)</span></div>
+            <div class="stat-box">⏱️ <b>\${isToday ? secAgo + 's ago' : '---'}</b><br><span style="color:#94a3b8">Last Ping</span></div>
           </div>
           <div class="btn-row">
             <button onclick="map.setView([\${v.currentLat}, \${v.currentLon}], 16)">📍 Center Map</button>
-            <button class="clappia" onclick="pushVanToClappia('\${v.deviceId}', this)">🚀 Push Clappia</button>
+            \${isToday ? \`<button class="clappia" onclick="pushVanToClappia('\${v.deviceId}', this)">🚀 Push Clappia</button>\` : ''}
           </div>
         \`;
         listEl.appendChild(card);
@@ -372,8 +413,8 @@ function getDashboardHtml() {
         layers[id] = { polyline, marker, haltMarkers };
       });
     }
-    setInterval(refreshData, 5000);
-    refreshData();
+    
+    handleDateChange();
   </script>
 </body>
 </html>`;
